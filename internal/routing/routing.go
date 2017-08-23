@@ -85,3 +85,91 @@ func Simulate(p policy.Policy, sum reliability.Summary, traces []trace.Trace) Si
 		aggs := sum.ForTask(task)
 		evals := policy.Evaluate(p, aggs)
 
+		d := Decision{
+			Task:        task,
+			Policy:      p.Name,
+			Evaluations: evals,
+		}
+
+		var eligible []policy.Evaluation
+		for _, e := range evals {
+			if e.Eligible {
+				eligible = append(eligible, e)
+				d.Eligible = append(d.Eligible, e.Model)
+			} else {
+				d.Rejected = append(d.Rejected, RejectedCandidate{
+					Model:      e.Model,
+					Violations: e.Violations,
+				})
+			}
+		}
+
+		if len(eligible) == 0 {
+			d.NoEligible = true
+			sim.Decisions = append(sim.Decisions, d)
+			sim.Totals.TasksUnrouted++
+			continue
+		}
+
+		winner := eligible[0]
+		d.Winner = winner.Model
+		d.Score = winner.Score
+		if len(eligible) > 1 {
+			d.Runnerup = eligible[1].Model
+			d.Margin = winner.Score - eligible[1].Score
+		} else {
+			d.Margin = winner.Score
+		}
+
+		d.Realized = replay(task, winner.Model, byTaskModel)
+		d.Baseline = replay(task, cheapestModel(aggs), byTaskModel)
+
+		sim.Totals.TasksDecided++
+		sim.Totals.RealizedCostUSD += d.Realized.TotalCostUSD
+		sim.Totals.BaselineCostUSD += d.Baseline.TotalCostUSD
+		realizedQualitySum += d.Realized.MeanQuality
+		baselineQualitySum += d.Baseline.MeanQuality
+		qualityWeight++
+
+		sim.Decisions = append(sim.Decisions, d)
+	}
+
+	sort.Slice(sim.Decisions, func(i, j int) bool { return sim.Decisions[i].Task < sim.Decisions[j].Task })
+	sim.Totals.CostDeltaUSD = sim.Totals.RealizedCostUSD - sim.Totals.BaselineCostUSD
+	if qualityWeight > 0 {
+		sim.Totals.RealizedQuality = realizedQualitySum / float64(qualityWeight)
+		sim.Totals.BaselineQuality = baselineQualitySum / float64(qualityWeight)
+	}
+	return sim
+}
+
+// SimulateAll runs every policy in a set and returns simulations in order.
+func SimulateAll(set policy.Set, sum reliability.Summary, traces []trace.Trace) []Simulation {
+	out := make([]Simulation, 0, len(set.Policies))
+	for _, p := range set.Policies {
+		out = append(out, Simulate(p, sum, traces))
+	}
+	return out
+}
+
+// indexTraces groups traces by task then model for O(1) replay lookups.
+func indexTraces(traces []trace.Trace) map[string]map[string][]trace.Trace {
+	idx := map[string]map[string][]trace.Trace{}
+	for _, t := range traces {
+		if idx[t.Task] == nil {
+			idx[t.Task] = map[string][]trace.Trace{}
+		}
+		idx[t.Task][t.Model] = append(idx[t.Task][t.Model], t)
+	}
+	return idx
+}
+
+// replay computes realized metrics by replaying every recorded trace for the
+// chosen model on the given task.
+func replay(task, model string, idx map[string]map[string][]trace.Trace) RealizedMetrics {
+	m := RealizedMetrics{Model: model}
+	traces := idx[task][model]
+	var latSum, qualSum float64
+	var successCount int
+	for _, t := range traces {
+		m.Calls++
