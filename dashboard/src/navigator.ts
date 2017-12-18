@@ -31,37 +31,3 @@ export interface RouteEntry {
   model: string;
   score: number;
   margin: number;
-}
-
-export class ReportNavigator {
-  readonly report: Report;
-
-  constructor(report: Report) {
-    if (!report || typeof report !== "object") {
-      throw new SchemaError("report is not an object");
-    }
-    if (report.schema !== SCHEMA_VERSION) {
-      throw new SchemaError(
-        `unsupported schema ${JSON.stringify(report.schema)} (expected ${SCHEMA_VERSION})`,
-      );
-    }
-    if (!Array.isArray(report.reliability) || !Array.isArray(report.pareto)) {
-      throw new SchemaError("report is missing reliability or pareto sections");
-    }
-    this.report = report;
-  }
-
-  /** Parse a JSON string into a validated navigator. */
-  static fromJSON(text: string): ReportNavigator {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch (e) {
-      throw new SchemaError(`report is not valid JSON: ${(e as Error).message}`);
-    }
-    return new ReportNavigator(parsed as Report);
-  }
-
-  /** All task names, sorted. */
-  tasks(): string[] {
-    return [...this.report.input.tasks];
