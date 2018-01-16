@@ -34,3 +34,39 @@ func TestComputeBasic(t *testing.T) {
 	}
 	// Cost/quality means use only successes.
 	if math.Abs(a.MeanCostUSD-0.15) > 1e-9 {
+		t.Errorf("bad mean cost: %v", a.MeanCostUSD)
+	}
+	if a.HighestPrivacy != trace.PrivacyInternal {
+		t.Errorf("bad highest privacy: %v", a.HighestPrivacy)
+	}
+	if a.ErrorKinds["timeout"] != 1 {
+		t.Errorf("error kind not counted: %+v", a.ErrorKinds)
+	}
+}
+
+func TestWilsonLowerBoundRewardsEvidence(t *testing.T) {
+	small := wilsonLowerBound(9, 10)
+	large := wilsonLowerBound(90, 100)
+	if !(large > small) {
+		t.Errorf("more evidence should raise the lower bound: 9/10=%.4f 90/100=%.4f", small, large)
+	}
+	if wilsonLowerBound(0, 0) != 0 {
+		t.Error("zero samples must yield 0")
+	}
+	if lb := wilsonLowerBound(10, 10); lb <= 0 || lb > 1 {
+		t.Errorf("perfect record out of range: %v", lb)
+	}
+}
+
+func TestPercentileInterpolation(t *testing.T) {
+	xs := []float64{10, 20, 30, 40}
+	if p := percentile(xs, 0.5); math.Abs(p-25) > 1e-9 {
+		t.Errorf("p50 want 25, got %v", p)
+	}
+	if p := percentile(xs, 0); p != 10 {
+		t.Errorf("p0 want 10, got %v", p)
+	}
+	if p := percentile(xs, 1); p != 40 {
+		t.Errorf("p100 want 40, got %v", p)
+	}
+	if p := percentile(nil, 0.5); p != 0 {
