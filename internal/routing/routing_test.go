@@ -24,29 +24,3 @@ func buildTraces() []trace.Trace {
 func TestSimulatePicksWinnerAndReplays(t *testing.T) {
 	traces := buildTraces()
 	sum := reliability.Compute(traces)
-	p := policy.Policy{
-		Name:       "quality",
-		Preference: policy.Preference{Weights: []policy.Weight{{Objective: policy.ObjQuality, Weight: 1}}},
-	}
-	sim := Simulate(p, sum, traces)
-	if len(sim.Decisions) != 1 {
-		t.Fatalf("want 1 decision, got %d", len(sim.Decisions))
-	}
-	d := sim.Decisions[0]
-	if d.Winner != "premium" {
-		t.Errorf("quality-weighted policy should pick premium, got %s", d.Winner)
-	}
-	if d.Realized.Calls != 10 {
-		t.Errorf("should replay 10 recorded calls, got %d", d.Realized.Calls)
-	}
-	// Baseline is the cheapest model.
-	if d.Baseline.Model != "cheap" {
-		t.Errorf("baseline should be cheapest model, got %s", d.Baseline.Model)
-	}
-	if d.Realized.TotalCostUSD <= d.Baseline.TotalCostUSD {
-		t.Error("premium realized cost should exceed cheap baseline")
-	}
-}
-
-func TestSimulateBudgetForcesCheaperWinner(t *testing.T) {
-	traces := buildTraces()
