@@ -11,3 +11,42 @@ recorded LLM traces, entirely offline.
 
 ### Added
 
+- **Trace ingestion** (`internal/trace`): provider-neutral JSONL reader with
+  strict per-record validation, quality clamping, comment/blank-line skipping,
+  deterministic sorting, and an ordered `PrivacyTier` enum
+  (public < internal < confidential < restricted) that accepts either the name
+  or the integer rank in JSON.
+- **Reliability aggregation** (`internal/reliability`): per model/task success
+  rate, Wilson score lower bound (95%) so thinly-sampled models cannot dominate,
+  latency p50/p95/p99 via interpolation, mean cost/quality/tokens, and observed
+  error-kind histograms.
+- **Pareto frontiers** (`internal/pareto`): multi-objective dominance analysis
+  over cost, p95 latency, quality, and reliability, reporting both the frontier
+  and, for each dominated model, exactly which models dominate it.
+- **Policy language & evaluator** (`internal/policy`): hard budget, latency,
+  quality, reliability, and privacy constraints plus allow/deny and
+  privacy-safe model lists; normalized weighted preferences for ranking
+  survivors, with per-objective score components exposed for explainability.
+- **Routing simulation** (`internal/routing`): compiles a winner per task and
+  replays every recorded trace through the choice to measure realized cost,
+  latency, quality, and success rate, compared against a cheapest-model
+  baseline.
+- **Explanations** (`internal/explain`): human-readable rationale for every
+  selection, including margins over runners-up, score breakdowns, replayed
+  evidence, and the specific constraint each rejected candidate violated.
+- **Deterministic reporting** (`internal/report`): byte-for-byte reproducible
+  JSON and text reports plus standalone compiled routing-table artifacts
+  (`policies.json`).
+- **CLI** (`cmd/modelmariner`): `analyze`, `validate`, and `version` commands
+  with `--strict`, `--format`, `--out`, and `--with-timestamp` flags.
+- **TypeScript navigation dashboard** (`dashboard/`): strictly-typed,
+  dependency-light terminal consumer with `overview`, `task`, `model`,
+  `policy`, and `routes` views; schema-guarded against incompatible reports.
+- **Synthetic corpus**: 1,400-line deterministic trace fleet across five models
+  and five tasks with realistic, non-trivial trade-offs.
+- **Docs**: nautical `README.md`, `docs/TRACE.md` schema reference, and two
+  self-contained animated SVGs (no remote media).
+- **Tooling**: `Makefile`, GitHub Actions CI covering fmt/vet/test for Go and
+  build/test for the dashboard, MIT `LICENSE`.
+
+[1.0.0]: https://example.com/modelmariner/releases/tag/v1.0.0
