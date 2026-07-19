@@ -10,3 +10,42 @@ permissions:
 
 jobs:
   go:
+    name: Go build & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+      - name: Verify formatting
+        run: test -z "$(gofmt -l .)" || (echo 'run gofmt -w .'; gofmt -l .; exit 1)
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./... -count=1 -cover
+      - name: Build
+        run: go build -trimpath -o bin/modelmariner ./cmd/modelmariner
+      - name: Smoke test (deterministic report)
+        run: |
+          ./bin/modelmariner analyze --traces testdata/fleet.jsonl \
+            --policy testdata/policies.json --out /tmp/out --format json > /tmp/run1.json
+          ./bin/modelmariner analyze --traces testdata/fleet.jsonl \
+            --policy testdata/policies.json --format json > /tmp/run2.json
+          diff /tmp/run1.json /tmp/run2.json && echo "report output is deterministic"
+
+  dashboard:
+    name: Dashboard build & test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install
+        run: npm install
+      - name: Type-check, build & test
+        run: npm test
