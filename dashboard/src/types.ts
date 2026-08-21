@@ -45,3 +45,99 @@ export interface ParetoPoint {
   quality: number;
   reliability: number;
   dominated: boolean;
+  dominated_by?: string[];
+}
+
+export interface ParetoFrontier {
+  task: string;
+  points: ParetoPoint[];
+  frontier: ParetoPoint[];
+}
+
+export interface Violation {
+  constraint: string;
+  detail: string;
+  limit?: number;
+  observed?: number;
+}
+
+export interface Evaluation {
+  model: string;
+  eligible: boolean;
+  score: number;
+  violations?: Violation[];
+  components?: Record<string, number>;
+}
+
+export interface RejectedCandidate {
+  model: string;
+  violations: Violation[];
+}
+
+export interface RealizedMetrics {
+  model: string;
+  calls: number;
+  successes: number;
+  success_rate: number;
+  total_cost_usd: number;
+  mean_latency_ms: number;
+  mean_quality: number;
+}
+
+export interface Decision {
+  task: string;
+  policy: string;
+  winner: string;
+  runner_up?: string;
+  score: number;
+  margin: number;
+  eligible: string[];
+  rejected?: RejectedCandidate[];
+  evaluations: Evaluation[];
+  realized: RealizedMetrics;
+  baseline: RealizedMetrics;
+  no_eligible: boolean;
+}
+
+export interface Totals {
+  tasks_decided: number;
+  tasks_unrouted: number;
+  realized_cost_usd: number;
+  baseline_cost_usd: number;
+  cost_delta_usd: number;
+  realized_mean_quality: number;
+  baseline_mean_quality: number;
+}
+
+export interface Simulation {
+  policy: string;
+  decisions: Decision[];
+  totals: Totals;
+}
+
+export interface Explanation {
+  task: string;
+  policy: string;
+  headline: string;
+  reasons: string[];
+  evidence: string[];
+  rejections?: string[];
+}
+
+export interface PolicyReport {
+  name: string;
+  description?: string;
+  simulation: Simulation;
+  explanations: Explanation[];
+}
+
+export interface Report {
+  schema: string;
+  generated?: string;
+  input: InputSummary;
+  reliability: ReliabilityAggregate[];
+  pareto: ParetoFrontier[];
+  policies: PolicyReport[];
+}
+
+export const SCHEMA_VERSION = "modelmariner/v1";
