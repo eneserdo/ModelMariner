@@ -36,3 +36,117 @@ type Frontier struct {
 func (f Frontier) FrontierModels() []string {
 	out := make([]string, 0, len(f.Frontier))
 	for _, p := range f.Frontier {
+		out = append(out, p.Model)
+	}
+	return out
+}
+
+// Analysis holds frontiers for every task.
+type Analysis struct {
+	Frontiers []Frontier `json:"frontiers"`
+}
+
+// ForTask returns the frontier for a named task and whether it exists.
+func (a Analysis) ForTask(task string) (Frontier, bool) {
+	for _, f := range a.Frontiers {
+		if f.Task == task {
+			return f, true
+		}
+	}
+	return Frontier{}, false
+}
+
+// Compute derives Pareto frontiers per task from a reliability summary. Only
+// models with at least one successful sample participate; a model that never
+// succeeded has no meaningful cost/latency/quality position.
+func Compute(sum reliability.Summary) Analysis {
+	var an Analysis
+	for _, task := range sum.Tasks {
+		aggs := sum.ForTask(task)
+		points := make([]Point, 0, len(aggs))
+		for _, a := range aggs {
+			if a.Successes == 0 {
+				continue
+			}
+			points = append(points, Point{
+				Model:       a.Model,
+				CostUSD:     a.MeanCostUSD,
+				LatencyMS:   a.P95LatencyMS,
+				Quality:     a.MeanQuality,
+				Reliability: a.WilsonLower,
+			})
+		}
+		if len(points) == 0 {
+			continue
+		}
+		markDominance(points)
+		frontier := make([]Point, 0, len(points))
+		for _, p := range points {
+			if !p.Dominated {
+				frontier = append(frontier, p)
+			}
+		}
+		// Sort frontier by ascending cost then descending quality for stable,
+		// human-friendly presentation.
+		sort.Slice(frontier, func(i, j int) bool {
+			if !almostEqual(frontier[i].CostUSD, frontier[j].CostUSD) {
+				return frontier[i].CostUSD < frontier[j].CostUSD
+			}
+			return frontier[i].Quality > frontier[j].Quality
+		})
+		sort.Slice(points, func(i, j int) bool { return points[i].Model < points[j].Model })
+		an.Frontiers = append(an.Frontiers, Frontier{
+			Task:     task,
+			Points:   points,
+			Frontier: frontier,
+		})
+	}
+	sort.Slice(an.Frontiers, func(i, j int) bool { return an.Frontiers[i].Task < an.Frontiers[j].Task })
+	return an
+}
+
+// markDominance fills the Dominated / DominatedBy fields in place. We minimize
+// cost and latency, maximize quality and reliability.
+func markDominance(points []Point) {
+	for i := range points {
+		var dominators []string
+		for j := range points {
+			if i == j {
+				continue
+			}
+			if dominates(points[j], points[i]) {
+				dominators = append(dominators, points[j].Model)
+			}
+		}
+		if len(dominators) > 0 {
+			sort.Strings(dominators)
+			points[i].Dominated = true
+			points[i].DominatedBy = dominators
+		}
+	}
+}
+
+// dominates reports whether point a Pareto-dominates point b: a is no worse on
+// every objective and strictly better on at least one.
+func dominates(a, b Point) bool {
+	noWorse := lessEqualCost(a.CostUSD, b.CostUSD) &&
+		lessEqualCost(a.LatencyMS, b.LatencyMS) &&
+		greaterEqual(a.Quality, b.Quality) &&
+		greaterEqual(a.Reliability, b.Reliability)
+	if !noWorse {
+		return false
+	}
+	strictlyBetter := strictlyLess(a.CostUSD, b.CostUSD) ||
+		strictlyLess(a.LatencyMS, b.LatencyMS) ||
+		strictlyGreater(a.Quality, b.Quality) ||
+		strictlyGreater(a.Reliability, b.Reliability)
+	return strictlyBetter
+}
+
+const epsilon = 1e-9
+
+func almostEqual(a, b float64) bool     { return math.Abs(a-b) <= epsilon }
+func lessEqualCost(a, b float64) bool   { return a <= b+epsilon }
+func greaterEqual(a, b float64) bool    { return a >= b-epsilon }
+func strictlyLess(a, b float64) bool    { return a < b-epsilon }
+func strictlyGreater(a, b float64) bool { return a > b+epsilon }
