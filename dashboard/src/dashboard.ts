@@ -117,3 +117,122 @@ function renderModel(nav: ReportNavigator, model: string): string {
   if (rows.length === 0) {
     return `no such model: ${model}`;
   }
+  out.push(`  ${pad("task", 26)}${pad("success", 10)}${pad("p95 ms", 10)}${pad("quality", 10)}${pad("cost", 10)}`);
+  for (const a of rows) {
+    out.push(
+      `  ${pad(a.task, 26)}${pad(pct(a.success_rate), 10)}` +
+        `${pad(a.p95_latency_ms.toFixed(0), 10)}${pad(a.mean_quality.toFixed(3), 10)}${pad(money(a.mean_cost_usd), 10)}`,
+    );
+  }
+  // Count how many task/policy combinations pick this model.
+  let wins = 0;
+  for (const policy of nav.policies()) {
+    for (const entry of nav.routingTable(policy)) {
+      if (entry.model === model) wins++;
+    }
+  }
+  out.push("");
+  out.push(`  Selected as winner in ${wins} task/policy combination(s).`);
+  return out.join("\n");
+}
+
+function renderPolicy(nav: ReportNavigator, name: string): string {
+  const pr = nav.policy(name);
+  if (!pr) return `no such policy: ${name}`;
+  const out: string[] = [];
+  out.push(BAR);
+  out.push(`  POLICY: ${name}`);
+  out.push(BAR);
+  if (pr.description) out.push(`  ${pr.description}`);
+  const t = pr.simulation.totals;
+  out.push("");
+  out.push(
+    `  Decided ${t.tasks_decided} task(s), ${t.tasks_unrouted} unrouted. ` +
+      `Realized ${money(t.realized_cost_usd)} vs baseline ${money(t.baseline_cost_usd)} ` +
+      `(delta ${money(t.cost_delta_usd)}).`,
+  );
+  out.push("");
+  for (const e of pr.explanations) {
+    out.push(`  • ${e.headline}`);
+    for (const reason of e.reasons) out.push(`      - ${reason}`);
+    for (const ev of e.evidence) out.push(`      evidence: ${ev}`);
+    for (const rej of e.rejections ?? []) out.push(`      rejected: ${rej}`);
+  }
+  return out.join("\n");
+}
+
+function renderRoutes(nav: ReportNavigator, name: string): string {
+  const table = nav.routingTable(name);
+  if (table.length === 0 && !nav.policy(name)) {
+    return `no such policy: ${name}`;
+  }
+  const out: string[] = [];
+  out.push(BAR);
+  out.push(`  COMPILED ROUTING TABLE: ${name}`);
+  out.push(BAR);
+  out.push(`  ${pad("task", 28)}${pad("model", 20)}${pad("score", 10)}${pad("margin", 10)}`);
+  for (const r of table) {
+    out.push(`  ${pad(r.task, 28)}${pad(r.model, 20)}${pad(r.score.toFixed(4), 10)}${pad(r.margin.toFixed(4), 10)}`);
+  }
+  const unrouted = nav.unroutedTasks(name);
+  if (unrouted.length > 0) {
+    out.push("");
+    out.push(`  UNROUTED (no eligible model): ${unrouted.join(", ")}`);
+  }
+  return out.join("\n");
+}
+
+export function render(nav: ReportNavigator, args: string[]): string {
+  const [command, arg] = args;
+  switch (command) {
+    case undefined:
+    case "overview":
+      return renderOverview(nav);
+    case "task":
+      if (!arg) return "usage: task <name>";
+      return renderTask(nav, arg);
+    case "model":
+      if (!arg) return "usage: model <name>";
+      return renderModel(nav, arg);
+    case "policy":
+      if (!arg) return "usage: policy <name>";
+      return renderPolicy(nav, arg);
+    case "routes":
+      if (!arg) return "usage: routes <name>";
+      return renderRoutes(nav, arg);
+    default:
+      return `unknown command: ${command}`;
+  }
+}
+
+function main(): void {
+  const argv = process.argv.slice(2);
+  if (argv.length === 0) {
+    console.error("usage: dashboard <report.json> [overview|task|model|policy|routes] [name]");
+    process.exit(2);
+  }
+  const [path, ...rest] = argv;
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (e) {
+    console.error(`cannot read ${path}: ${(e as Error).message}`);
+    process.exit(1);
+    return;
+  }
+  try {
+    const nav = ReportNavigator.fromJSON(text);
+    console.log(render(nav, rest));
+  } catch (e) {
+    if (e instanceof SchemaError) {
+      console.error(`schema error: ${e.message}`);
+      process.exit(1);
+    }
+    throw e;
+  }
+}
+
+// Only run main when invoked directly, not when imported by tests.
+if (process.argv[1] && process.argv[1].endsWith("dashboard.js")) {
+  main();
+}
