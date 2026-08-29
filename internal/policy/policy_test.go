@@ -34,3 +34,114 @@ func TestLoadRejectsInvalid(t *testing.T) {
 		"bad objective":       `{"policies":[{"name":"p","preference":{"weights":[{"objective":"speed","weight":1}]}}]}`,
 		"zero weights":        `{"policies":[{"name":"p","preference":{"weights":[{"objective":"cost","weight":0}]}}]}`,
 		"quality range":       `{"policies":[{"name":"p","constraints":{"min_quality":2},"preference":{"weights":[{"objective":"cost","weight":1}]}}]}`,
+		"duplicate name":      `{"policies":[{"name":"p","preference":{"weights":[{"objective":"cost","weight":1}]}},{"name":"p","preference":{"weights":[{"objective":"cost","weight":1}]}}]}`,
+		"duplicate objective": `{"policies":[{"name":"p","preference":{"weights":[{"objective":"cost","weight":1},{"objective":"cost","weight":1}]}}]}`,
+	}
+	for name, js := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Load(strings.NewReader(js)); err == nil {
+				t.Errorf("expected load error for %q", name)
+			}
+		})
+	}
+}
+
+func TestBudgetConstraintDisqualifies(t *testing.T) {
+	p := Policy{
+		Name:        "budget",
+		Constraints: Constraints{MaxCostUSD: 0.30},
+		Preference:  Preference{Weights: []Weight{{ObjCost, 1}}},
+	}
+	aggs := []reliability.Aggregate{
+		agg("cheap", 0.10, 100, 0.9, 0.95, 0),
+		agg("pricey", 0.50, 100, 0.9, 0.95, 0),
+	}
+	evals := Evaluate(p, aggs)
+	byModel := map[string]Evaluation{}
+	for _, e := range evals {
+		byModel[e.Model] = e
+	}
+	if !byModel["cheap"].Eligible {
+		t.Error("cheap should be eligible")
+	}
+	if byModel["pricey"].Eligible {
+		t.Error("pricey should be disqualified by budget")
+	}
+	if len(byModel["pricey"].Violations) == 0 || byModel["pricey"].Violations[0].Constraint != "max_cost_usd" {
+		t.Errorf("expected max_cost_usd violation: %+v", byModel["pricey"].Violations)
+	}
+}
+
+func TestPrivacyConstraintAndSafeList(t *testing.T) {
+	restricted := trace.PrivacyRestricted
+	internal := trace.PrivacyInternal
+	p := Policy{
+		Name: "privacy",
+		Constraints: Constraints{
+			MaxPrivacy:        &internal,
+			PrivacySafeModels: []string{"onprem"},
+		},
+		Preference: Preference{Weights: []Weight{{ObjQuality, 1}}},
+	}
+	aggs := []reliability.Aggregate{
+		agg("cloud", 0.1, 100, 0.9, 0.9, restricted),  // exceeds cap, not safe
+		agg("onprem", 0.2, 200, 0.8, 0.9, restricted), // exceeds cap but cleared
+	}
+	evals := Evaluate(p, aggs)
+	byModel := map[string]Evaluation{}
+	for _, e := range evals {
+		byModel[e.Model] = e
+	}
+	if byModel["cloud"].Eligible {
+		t.Error("cloud model must be disqualified on restricted data")
+	}
+	if !byModel["onprem"].Eligible {
+		t.Error("privacy-safe on-prem model must remain eligible")
+	}
+}
+
+func TestScoringPrefersHigherWeightedObjective(t *testing.T) {
+	// Weight quality entirely; the higher-quality model must win.
+	p := Policy{
+		Name:       "q",
+		Preference: Preference{Weights: []Weight{{ObjQuality, 1}}},
+	}
+	aggs := []reliability.Aggregate{
+		agg("low", 0.1, 100, 0.70, 0.9, 0),
+		agg("high", 0.5, 500, 0.99, 0.9, 0),
+	}
+	evals := Evaluate(p, aggs)
+	if evals[0].Model != "high" {
+		t.Errorf("highest quality should rank first, got %s", evals[0].Model)
+	}
+}
+
+func TestNormalizedWeightsSumToOne(t *testing.T) {
+	pref := Preference{Weights: []Weight{{ObjCost, 3}, {ObjQuality, 1}}}
+	w := pref.NormalizedWeights()
+	sum := w[ObjCost] + w[ObjQuality]
+	if sum < 0.999999 || sum > 1.000001 {
+		t.Errorf("weights should normalize to 1, got %v", sum)
+	}
+}
+
+func TestAppliesToScoping(t *testing.T) {
+	global := Policy{Name: "g"}
+	scoped := Policy{Name: "s", Tasks: []string{"only"}}
+	if !global.AppliesTo("anything") {
+		t.Error("global policy should apply to all tasks")
+	}
+	if scoped.AppliesTo("other") || !scoped.AppliesTo("only") {
+		t.Error("scoped policy applies incorrectly")
+	}
+}
+
+func TestZeroSampleModelIneligible(t *testing.T) {
+	a := agg("dead", 0.1, 100, 0.9, 0.9, 0)
+	a.Successes = 0
+	p := Policy{Name: "p", Preference: Preference{Weights: []Weight{{ObjCost, 1}}}}
+	evals := Evaluate(p, []reliability.Aggregate{a})
+	if evals[0].Eligible {
+		t.Error("model with no successes must be ineligible")
+	}
+}
