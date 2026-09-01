@@ -24,3 +24,82 @@ func buildTraces() []trace.Trace {
 func TestSimulatePicksWinnerAndReplays(t *testing.T) {
 	traces := buildTraces()
 	sum := reliability.Compute(traces)
+	p := policy.Policy{
+		Name:       "quality",
+		Preference: policy.Preference{Weights: []policy.Weight{{Objective: policy.ObjQuality, Weight: 1}}},
+	}
+	sim := Simulate(p, sum, traces)
+	if len(sim.Decisions) != 1 {
+		t.Fatalf("want 1 decision, got %d", len(sim.Decisions))
+	}
+	d := sim.Decisions[0]
+	if d.Winner != "premium" {
+		t.Errorf("quality-weighted policy should pick premium, got %s", d.Winner)
+	}
+	if d.Realized.Calls != 10 {
+		t.Errorf("should replay 10 recorded calls, got %d", d.Realized.Calls)
+	}
+	// Baseline is the cheapest model.
+	if d.Baseline.Model != "cheap" {
+		t.Errorf("baseline should be cheapest model, got %s", d.Baseline.Model)
+	}
+	if d.Realized.TotalCostUSD <= d.Baseline.TotalCostUSD {
+		t.Error("premium realized cost should exceed cheap baseline")
+	}
+}
+
+func TestSimulateBudgetForcesCheaperWinner(t *testing.T) {
+	traces := buildTraces()
+	sum := reliability.Compute(traces)
+	p := policy.Policy{
+		Name:        "budget",
+		Constraints: policy.Constraints{MaxCostUSD: 0.30},
+		Preference:  policy.Preference{Weights: []policy.Weight{{Objective: policy.ObjQuality, Weight: 1}}},
+	}
+	sim := Simulate(p, sum, traces)
+	d := sim.Decisions[0]
+	if d.Winner != "cheap" {
+		t.Errorf("budget should force cheap winner even though quality prefers premium, got %s", d.Winner)
+	}
+	// premium must be recorded as rejected.
+	found := false
+	for _, r := range d.Rejected {
+		if r.Model == "premium" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("premium should be listed as rejected under budget")
+	}
+}
+
+func TestNoEligibleWhenAllViolate(t *testing.T) {
+	traces := buildTraces()
+	sum := reliability.Compute(traces)
+	p := policy.Policy{
+		Name:        "impossible",
+		Constraints: policy.Constraints{MinQuality: 0.999},
+		Preference:  policy.Preference{Weights: []policy.Weight{{Objective: policy.ObjQuality, Weight: 1}}},
+	}
+	sim := Simulate(p, sum, traces)
+	if !sim.Decisions[0].NoEligible {
+		t.Error("expected no eligible model")
+	}
+	if sim.Totals.TasksUnrouted != 1 {
+		t.Errorf("expected 1 unrouted task, got %d", sim.Totals.TasksUnrouted)
+	}
+}
+
+func TestTotalsDelta(t *testing.T) {
+	traces := buildTraces()
+	sum := reliability.Compute(traces)
+	p := policy.Policy{
+		Name:       "quality",
+		Preference: policy.Preference{Weights: []policy.Weight{{Objective: policy.ObjQuality, Weight: 1}}},
+	}
+	sim := Simulate(p, sum, traces)
+	want := sim.Totals.RealizedCostUSD - sim.Totals.BaselineCostUSD
+	if sim.Totals.CostDeltaUSD != want {
+		t.Errorf("cost delta mismatch: %v vs %v", sim.Totals.CostDeltaUSD, want)
+	}
+}
