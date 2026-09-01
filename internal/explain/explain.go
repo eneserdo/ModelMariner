@@ -40,3 +40,89 @@ func For(d routing.Decision) Explanation {
 	if d.Runnerup != "" {
 		e.Reasons = append(e.Reasons, fmt.Sprintf(
 			"%s beat runner-up %s by a margin of %.4f in weighted score",
+			d.Winner, d.Runnerup, d.Margin))
+	} else {
+		e.Reasons = append(e.Reasons, fmt.Sprintf(
+			"%s was the only model to satisfy every hard constraint", d.Winner))
+	}
+
+	// Surface the winner's score component breakdown.
+	for _, ev := range d.Evaluations {
+		if ev.Model == d.Winner && len(ev.Components) > 0 {
+			e.Reasons = append(e.Reasons, "score components: "+componentBreakdown(ev.Components))
+		}
+	}
+
+	r := d.Realized
+	e.Evidence = append(e.Evidence, fmt.Sprintf(
+		"replayed %d recorded call(s): %.1f%% success, mean quality %.3f, mean latency %.0f ms, total cost $%.4f",
+		r.Calls, r.SuccessRate*100, r.MeanQuality, r.MeanLatencyMS, r.TotalCostUSD))
+
+	b := d.Baseline
+	if b.Model != "" && b.Model != r.Model {
+		delta := r.TotalCostUSD - b.TotalCostUSD
+		verb := "more"
+		if delta < 0 {
+			verb = "less"
+			delta = -delta
+		}
+		e.Evidence = append(e.Evidence, fmt.Sprintf(
+			"versus cheapest-model baseline %s: $%.4f %s cost, %.3f vs %.3f mean quality",
+			b.Model, delta, verb, r.MeanQuality, b.MeanQuality))
+	}
+
+	for _, rej := range d.Rejected {
+		e.Rejections = append(e.Rejections, rejectionLine(rej))
+	}
+	return e
+}
+
+// Text renders the explanation as a readable block.
+func (e Explanation) Text() string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "• %s\n", e.Headline)
+	for _, r := range e.Reasons {
+		fmt.Fprintf(&sb, "    - %s\n", r)
+	}
+	for _, ev := range e.Evidence {
+		fmt.Fprintf(&sb, "    evidence: %s\n", ev)
+	}
+	for _, rej := range e.Rejections {
+		fmt.Fprintf(&sb, "    rejected: %s\n", rej)
+	}
+	return sb.String()
+}
+
+func rejectionLine(r routing.RejectedCandidate) string {
+	parts := make([]string, 0, len(r.Violations))
+	for _, v := range r.Violations {
+		if v.Limit != 0 || v.Observed != 0 {
+			parts = append(parts, fmt.Sprintf("%s (limit %.4g, observed %.4g)", v.Constraint, v.Limit, v.Observed))
+		} else {
+			parts = append(parts, fmt.Sprintf("%s (%s)", v.Constraint, v.Detail))
+		}
+	}
+	return fmt.Sprintf("%s — %s", r.Model, strings.Join(parts, "; "))
+}
+
+func componentBreakdown(comp map[string]float64) string {
+	keys := make([]string, 0, len(comp))
+	for k := range comp {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%.4f", k, comp[k]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// All builds explanations for a full simulation.
+func All(sim routing.Simulation) []Explanation {
+	out := make([]Explanation, 0, len(sim.Decisions))
+	for _, d := range sim.Decisions {
+		out = append(out, For(d))
+	}
+	return out
+}
