@@ -34,3 +34,76 @@ func buildReport(t *testing.T) Report {
 	}
 	sims := routing.SimulateAll(set, sum, ing.Traces)
 	return Build(BuildInput{
+		Ingest: ing, Traces: ing.Traces, Reliability: sum,
+		Pareto: par, Policies: set, Simulations: sims, Deterministic: true,
+	})
+}
+
+func TestReportJSONIsDeterministic(t *testing.T) {
+	r1 := buildReport(t)
+	r2 := buildReport(t)
+	b1, err := r1.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b2, err := r2.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(b1, b2) {
+		t.Fatal("report JSON is not deterministic across identical runs")
+	}
+}
+
+func TestReportJSONIsValidAndSchema(t *testing.T) {
+	r := buildReport(t)
+	b, err := r.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(b, &decoded); err != nil {
+		t.Fatalf("report is not valid JSON: %v", err)
+	}
+	if decoded["schema"] != SchemaVersion {
+		t.Errorf("bad schema: %v", decoded["schema"])
+	}
+	if r.Generated != "" {
+		t.Error("deterministic report must omit generation timestamp")
+	}
+}
+
+func TestReportTextContainsSelection(t *testing.T) {
+	r := buildReport(t)
+	txt := r.Text()
+	if !strings.Contains(txt, "route \"t\" to premium") {
+		t.Errorf("text report missing expected routing selection:\n%s", txt)
+	}
+	if !strings.Contains(txt, "PARETO FRONTIERS") {
+		t.Error("text report missing pareto section")
+	}
+}
+
+func TestCompilePolicyArtifacts(t *testing.T) {
+	r := buildReport(t)
+	// Rebuild simulations to compile artifacts.
+	ing, _ := trace.Ingest(strings.NewReader(corpus), trace.DefaultOptions())
+	sum := reliability.Compute(ing.Traces)
+	set, _ := policy.Load(strings.NewReader(policyJSON))
+	sims := routing.SimulateAll(set, sum, ing.Traces)
+	arts := CompilePolicyArtifacts(sims)
+	if len(arts) != 1 || len(arts[0].Routes) != 1 {
+		t.Fatalf("unexpected artifacts: %+v", arts)
+	}
+	if arts[0].Routes[0].Model != "premium" {
+		t.Errorf("compiled route should target premium, got %s", arts[0].Routes[0].Model)
+	}
+	b, err := ArtifactsJSON(arts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !json.Valid(b) {
+		t.Error("artifacts JSON invalid")
+	}
+	_ = r
+}
