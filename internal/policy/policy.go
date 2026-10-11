@@ -201,3 +201,207 @@ func (p Preference) NormalizedWeights() map[Objective]float64 {
 	}
 	for _, w := range p.Weights {
 		out[w.Objective] = w.Weight / total
+	}
+	return out
+}
+
+// Evaluate applies a policy to every candidate aggregate for a task and returns
+// per-model verdicts sorted by score (descending) then model name. Candidates
+// with no successful samples are always ineligible.
+func Evaluate(p Policy, aggs []reliability.Aggregate) []Evaluation {
+	deny := toSet(p.Constraints.DenyModels)
+	var allow map[string]bool
+	if len(p.Constraints.AllowModels) > 0 {
+		allow = toSet(p.Constraints.AllowModels)
+	}
+	safe := toSet(p.Constraints.PrivacySafeModels)
+
+	// Compute scaling extents for score normalization across the candidate set.
+	ranges := computeRanges(aggs)
+
+	out := make([]Evaluation, 0, len(aggs))
+	for _, a := range aggs {
+		ev := Evaluation{Model: a.Model, Eligible: true}
+		c := p.Constraints
+
+		if a.Successes == 0 {
+			ev.Eligible = false
+			ev.Violations = append(ev.Violations, Violation{
+				Constraint: "samples",
+				Detail:     "no successful samples recorded for this model/task",
+			})
+		}
+		if deny[a.Model] {
+			ev.Eligible = false
+			ev.Violations = append(ev.Violations, Violation{
+				Constraint: "deny_models",
+				Detail:     fmt.Sprintf("model %q is explicitly denied", a.Model),
+			})
+		}
+		if allow != nil && !allow[a.Model] {
+			ev.Eligible = false
+			ev.Violations = append(ev.Violations, Violation{
+				Constraint: "allow_models",
+				Detail:     fmt.Sprintf("model %q is not in the allow list", a.Model),
+			})
+		}
+		if c.MaxCostUSD > 0 && a.MeanCostUSD > c.MaxCostUSD+1e-9 {
+			ev.Eligible = false
+			ev.Violations = append(ev.Violations, Violation{
+				Constraint: "max_cost_usd",
+				Detail:     "mean cost exceeds budget",
+				Limit:      c.MaxCostUSD,
+				Observed:   a.MeanCostUSD,
+			})
+		}
+		if c.MaxLatencyMS > 0 && a.P95LatencyMS > c.MaxLatencyMS+1e-9 {
+			ev.Eligible = false
+			ev.Violations = append(ev.Violations, Violation{
+				Constraint: "max_latency_ms",
+				Detail:     "p95 latency exceeds ceiling",
+				Limit:      c.MaxLatencyMS,
+				Observed:   a.P95LatencyMS,
+			})
+		}
+		if c.MinQuality > 0 && a.MeanQuality < c.MinQuality-1e-9 {
+			ev.Eligible = false
+			ev.Violations = append(ev.Violations, Violation{
+				Constraint: "min_quality",
+				Detail:     "mean quality below floor",
+				Limit:      c.MinQuality,
+				Observed:   a.MeanQuality,
+			})
+		}
+		if c.MinReliability > 0 && a.WilsonLower < c.MinReliability-1e-9 {
+			ev.Eligible = false
+			ev.Violations = append(ev.Violations, Violation{
+				Constraint: "min_reliability",
+				Detail:     "reliability lower bound below floor",
+				Limit:      c.MinReliability,
+				Observed:   a.WilsonLower,
+			})
+		}
+		if c.MaxPrivacy != nil && a.HighestPrivacy > *c.MaxPrivacy && !safe[a.Model] {
+			ev.Eligible = false
+			ev.Violations = append(ev.Violations, Violation{
+				Constraint: "max_privacy",
+				Detail: fmt.Sprintf("task data reaches %q but policy caps at %q and model is not privacy-safe",
+					a.HighestPrivacy, c.MaxPrivacy.String()),
+			})
+		}
+
+		if ev.Eligible {
+			ev.Score, ev.Components = score(a, p.Preference.NormalizedWeights(), ranges)
+		}
+		out = append(out, ev)
+	}
+
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Eligible != out[j].Eligible {
+			return out[i].Eligible // eligible first
+		}
+		if out[i].Eligible && !almostEqual(out[i].Score, out[j].Score) {
+			return out[i].Score > out[j].Score
+		}
+		return out[i].Model < out[j].Model
+	})
+	return out
+}
+
+// objectiveRange records the min/max of each objective across candidates so
+// scores can be normalized to [0,1] regardless of absolute units.
+type objectiveRange struct {
+	minCost, maxCost float64
+	minLat, maxLat   float64
+	minQual, maxQual float64
+	minRel, maxRel   float64
+}
+
+func computeRanges(aggs []reliability.Aggregate) objectiveRange {
+	r := objectiveRange{
+		minCost: pos, maxCost: 0,
+		minLat: pos, maxLat: 0,
+		minQual: pos, maxQual: 0,
+		minRel: pos, maxRel: 0,
+	}
+	found := false
+	for _, a := range aggs {
+		if a.Successes == 0 {
+			continue
+		}
+		found = true
+		r.minCost = min(r.minCost, a.MeanCostUSD)
+		r.maxCost = max(r.maxCost, a.MeanCostUSD)
+		r.minLat = min(r.minLat, a.P95LatencyMS)
+		r.maxLat = max(r.maxLat, a.P95LatencyMS)
+		r.minQual = min(r.minQual, a.MeanQuality)
+		r.maxQual = max(r.maxQual, a.MeanQuality)
+		r.minRel = min(r.minRel, a.WilsonLower)
+		r.maxRel = max(r.maxRel, a.WilsonLower)
+	}
+	if !found {
+		return objectiveRange{}
+	}
+	return r
+}
+
+const pos = 1e18
+
+// score produces a normalized [0,1] weighted score. Cost and latency are
+// inverted (lower is better) via normalization; quality and reliability are
+// used directly. Components are exposed so explanations can show the breakdown.
+func score(a reliability.Aggregate, w map[Objective]float64, r objectiveRange) (float64, map[string]float64) {
+	comp := map[string]float64{}
+	total := 0.0
+
+	normLowerBetter := func(v, lo, hi float64) float64 {
+		if hi <= lo {
+			return 1.0
+		}
+		return 1.0 - (v-lo)/(hi-lo)
+	}
+	normHigherBetter := func(v, lo, hi float64) float64 {
+		if hi <= lo {
+			return 1.0
+		}
+		return (v - lo) / (hi - lo)
+	}
+
+	if wc, ok := w[ObjCost]; ok {
+		s := normLowerBetter(a.MeanCostUSD, r.minCost, r.maxCost) * wc
+		comp["cost"] = s
+		total += s
+	}
+	if wc, ok := w[ObjLatency]; ok {
+		s := normLowerBetter(a.P95LatencyMS, r.minLat, r.maxLat) * wc
+		comp["latency"] = s
+		total += s
+	}
+	if wc, ok := w[ObjQuality]; ok {
+		s := normHigherBetter(a.MeanQuality, r.minQual, r.maxQual) * wc
+		comp["quality"] = s
+		total += s
+	}
+	if wc, ok := w[ObjReliability]; ok {
+		s := normHigherBetter(a.WilsonLower, r.minRel, r.maxRel) * wc
+		comp["reliability"] = s
+		total += s
+	}
+	return total, comp
+}
+
+func toSet(xs []string) map[string]bool {
+	m := make(map[string]bool, len(xs))
+	for _, x := range xs {
+		m[strings.TrimSpace(x)] = true
+	}
+	return m
+}
+
+func almostEqual(a, b float64) bool {
+	d := a - b
+	if d < 0 {
+		d = -d
+	}
+	return d <= 1e-9
+}
