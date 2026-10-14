@@ -41,3 +41,46 @@ func TestDominatedPointRemoved(t *testing.T) {
 			if !p.Dominated || !contains(p.DominatedBy, "cheap") {
 				t.Errorf("worse should be dominated by cheap: %+v", p)
 			}
+		}
+	}
+}
+
+func TestSkipsZeroSuccessModels(t *testing.T) {
+	a := agg("dead", 0.1, 100, 0.9, 0.9)
+	a.Successes = 0
+	sum := reliability.Summary{
+		Tasks:      []string{"t"},
+		Aggregates: []reliability.Aggregate{a, agg("live", 0.2, 200, 0.8, 0.8)},
+	}
+	an := Compute(sum)
+	f, _ := an.ForTask("t")
+	if len(f.Points) != 1 || f.Points[0].Model != "live" {
+		t.Errorf("zero-success model should be excluded: %+v", f.Points)
+	}
+}
+
+func TestNoModelsProducesNoFrontier(t *testing.T) {
+	sum := reliability.Summary{Tasks: []string{"empty"}}
+	an := Compute(sum)
+	if _, ok := an.ForTask("empty"); ok {
+		t.Error("empty task should not produce a frontier")
+	}
+}
+
+func TestDominanceIsStrict(t *testing.T) {
+	// Two identical points must not dominate each other (no strict improvement).
+	a := Point{Model: "x", CostUSD: 1, LatencyMS: 1, Quality: 1, Reliability: 1}
+	b := Point{Model: "y", CostUSD: 1, LatencyMS: 1, Quality: 1, Reliability: 1}
+	if dominates(a, b) || dominates(b, a) {
+		t.Error("identical points must not dominate each other")
+	}
+}
+
+func contains(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
